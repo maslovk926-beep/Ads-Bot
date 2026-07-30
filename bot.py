@@ -1,903 +1,67 @@
 import telebot
 from telebot import types
-import sqlite3
 import datetime
-import time
+import database
+import config
 
-from config import TOKEN, OWNER_ID, CHANNEL_ID
-
+TOKEN = config.TOKEN
+OWNER_ID = config.OWNER_ID
+CHANNEL_ID = config.CHANNEL_ID
 
 bot = telebot.TeleBot(TOKEN)
 
+database.init()
 
-DB = "ads.db"
-
-
-# =====================
-# БАЗА ДАННЫХ
-# =====================
-
-def connect():
-    return sqlite3.connect(DB)
+print("Ads-Bot v5 ядро загружено")
 
 
-
-def init_database():
-
-    con = connect()
-    cur = con.cursor()
-
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS users(
-        id INTEGER PRIMARY KEY,
-        username TEXT,
-        role TEXT DEFAULT 'user',
-        agreed INTEGER DEFAULT 0,
-        created TEXT
-    )
-    """)
-
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS ads(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        category TEXT,
-        title TEXT,
-        description TEXT,
-        price TEXT,
-        city TEXT,
-        contact TEXT,
-        photo TEXT,
-        status TEXT DEFAULT 'moderation',
-        moderator TEXT,
-        reason TEXT,
-        created TEXT
-    )
-    """)
-
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS logs(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user TEXT,
-        action TEXT,
-        created TEXT
-    )
-    """)
-
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS favorites(
-        user_id INTEGER,
-        ad_id INTEGER
-    )
-    """)
-
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS reports(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        ad_id INTEGER,
-        reason TEXT,
-        created TEXT
-    )
-    """)
-
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS settings(
-        key TEXT PRIMARY KEY,
-        value TEXT
-    )
-    """)
-
-
-    con.commit()
-    con.close()
-
-
-
-init_database()
-
-
-
-# =====================
-# НАСТРОЙКИ
-# =====================
-
-
-CATEGORIES = [
-    "🚗 Авто",
-    "🏠 Недвижимость",
-    "📦 Товары",
-    "🛠 Услуги",
-    "💼 Работа",
-    "🔹 Другое"
-]
-
-
-RULES = """
-⚠️ Правила сервиса
-
-Вы используете рекламный бот.
-
-Администрация сервиса не является участником сделок.
-
-Пользователь самостоятельно отвечает за:
-• содержание объявления;
-• предоставленные контакты;
-• общение с другими пользователями;
-• безопасность сделки.
-
-Раскрытие личных данных происходит
-на ответственность пользователя.
-
-Продолжая использование бота,
-вы соглашаетесь с правилами.
-"""
-
-
+# =========================
+# КЭШ СОСТОЯНИЙ
+# =========================
 
 user_cache = {}
 
 
+# =========================
+# ПРАВА
+# =========================
 
-# =====================
-# РАБОТА С ПОЛЬЗОВАТЕЛЯМИ
-# =====================
-
-
-def save_user(user):
-
-    con = connect()
-    cur = con.cursor()
+def is_owner(user_id):
+    return user_id == OWNER_ID
 
 
-    cur.execute("""
-    INSERT OR IGNORE INTO users
-    (id, username, created)
-    VALUES(?,?,?)
-    """,
-    (
-        user.id,
-        user.username,
-        str(datetime.datetime.now())
-    ))
+def is_manager(user_id):
 
+    if is_owner(user_id):
+        return True
 
-    if user.id == OWNER_ID:
-
-        cur.execute("""
-        UPDATE users
-        SET role='owner'
-        WHERE id=?
-        """,
-        (OWNER_ID,))
-
-
-    con.commit()
-    con.close()
-
-
-
-def get_role(user_id):
-
-    con = connect()
-    cur = con.cursor()
-
-
-    cur.execute(
-        "SELECT role FROM users WHERE id=?",
-        (user_id,)
-    )
-
-
-    result = cur.fetchone()
-
-    con.close()
-
-
-    if result:
-        return result[0]
-
-    return "user"
+    return database.get_role(user_id) == "manager"
 
 
 
 def is_moderator(user_id):
+    return is_manager(user_id)
 
-    return get_role(user_id) in [
-        "owner",
-        "admin"
-    ]
 
 
+# =========================
+# КЛАВИАТУРЫ
+# =========================
 
-def get_name(user):
-
-    if user.username:
-
-        return "@" + user.username
-
-    return user.first_name
-
-
-
-def write_log(user, action):
-
-    con = connect()
-    cur = con.cursor()
-
-
-    cur.execute("""
-    INSERT INTO logs
-    (user, action, created)
-    VALUES(?,?,?)
-    """,
-    (
-        user,
-        action,
-        str(datetime.datetime.now())
-    ))
-
-
-    con.commit()
-    con.close()
-
-
-
-print("v4 ядро загружено")# =====================
-# АДМИН-ПАНЕЛЬ
-# =====================
-
-
-@bot.message_handler(commands=["admin"])
-def admin_panel(message):
-
-    if get_role(message.chat.id) != "owner":
-
-        bot.send_message(
-            message.chat.id,
-            "❌ Доступ только владельцу"
-        )
-
-        return
-
-
-    kb = types.InlineKeyboardMarkup()
-
-
-    kb.add(
-        types.InlineKeyboardButton(
-            "👥 Менеджеры",
-            callback_data="manager_menu"
-        )
-    )
-
-
-    kb.add(
-        types.InlineKeyboardButton(
-            "📊 Статистика",
-            callback_data="stats"
-        )
-    )
-
-
-    kb.add(
-        types.InlineKeyboardButton(
-            "📜 Логи",
-            callback_data="logs"
-        )
-    )
-
-
-    kb.add(
-        types.InlineKeyboardButton(
-            "⚙️ Настройки",
-            callback_data="settings"
-        )
-    )
-
-
-    bot.send_message(
-        message.chat.id,
-        "👑 Админ-панель",
-        reply_markup=kb
-    )
-
-
-
-# =====================
-# ДОБАВИТЬ МЕНЕДЖЕРА
-# =====================
-
-
-@bot.message_handler(commands=["add_admin"])
-def add_admin(message):
-
-    if message.chat.id != OWNER_ID:
-        return
-
-
-    try:
-
-        user_id = int(
-            message.text.split()[1]
-        )
-
-
-        con = connect()
-        cur = con.cursor()
-
-
-        cur.execute("""
-        INSERT OR IGNORE INTO users
-        (id, role, created)
-        VALUES(?,?,?)
-        """,
-        (
-            user_id,
-            "admin",
-            str(datetime.datetime.now())
-        ))
-
-
-        cur.execute("""
-        UPDATE users
-        SET role='admin'
-        WHERE id=?
-        """,
-        (user_id,))
-
-
-        con.commit()
-        con.close()
-
-
-        write_log(
-            str(message.chat.id),
-            f"Добавил менеджера {user_id}"
-        )
-
-
-        bot.reply_to(
-            message,
-            "✅ Менеджер добавлен"
-        )
-
-
-    except:
-
-        bot.reply_to(
-            message,
-            "Использование:\n/add_admin ID"
-        )
-
-
-
-# =====================
-# УДАЛИТЬ МЕНЕДЖЕРА
-# =====================
-
-
-@bot.message_handler(commands=["remove_admin"])
-def remove_admin(message):
-
-    if message.chat.id != OWNER_ID:
-        return
-
-
-    try:
-
-        user_id = int(
-            message.text.split()[1]
-        )
-
-
-        con = connect()
-        cur = con.cursor()
-
-
-        cur.execute("""
-        UPDATE users
-        SET role='user'
-        WHERE id=?
-        """,
-        (user_id,))
-
-
-        con.commit()
-        con.close()
-
-
-        write_log(
-            str(message.chat.id),
-            f"Удалил менеджера {user_id}"
-        )
-
-
-        bot.reply_to(
-            message,
-            "❌ Права менеджера сняты"
-        )
-
-
-    except:
-
-        bot.reply_to(
-            message,
-            "Использование:\n/remove_admin ID"
-        )
-
-
-
-# =====================
-# СПИСОК МЕНЕДЖЕРОВ
-# =====================
-
-
-@bot.message_handler(commands=["admins"])
-def admins(message):
-
-    if message.chat.id != OWNER_ID:
-        return
-
-
-    con = connect()
-    cur = con.cursor()
-
-
-    cur.execute("""
-    SELECT id, username
-    FROM users
-    WHERE role='admin'
-    """)
-
-
-    admins = cur.fetchall()
-
-    con.close()
-
-
-
-    text = "🛡 Менеджеры:\n\n"
-
-
-    if not admins:
-
-        text += "Нет менеджеров"
-
-    else:
-
-        for admin in admins:
-
-            username = admin[1]
-
-            if username:
-
-                text += (
-                    f"@{username} "
-                    f"({admin[0]})\n"
-                )
-
-            else:
-
-                text += (
-                    f"ID: {admin[0]}\n"
-                )
-
-
-
-    bot.send_message(
-        message.chat.id,
-        text
-    )
-
-
-
-# =====================
-# МЕНЮ МЕНЕДЖЕРОВ
-# =====================
-
-
-@bot.callback_query_handler(
-    func=lambda c: c.data=="manager_menu"
-)
-def manager_menu(call):
-
-    if call.from_user.id != OWNER_ID:
-        return
-
-
-    bot.send_message(
-        call.message.chat.id,
-        """
-👥 Управление менеджерами
-
-Добавить:
- /add_admin ID
-
-Удалить:
- /remove_admin ID
-
-Список:
- /admins
-"""
-    )# =====================
-# START
-# =====================
-
-
-@bot.message_handler(commands=["start"])
-def start(message):
-
-    save_user(message.from_user)
-
+def main_menu():
 
     kb = types.ReplyKeyboardMarkup(
         resize_keyboard=True
     )
 
-
     kb.add(
-        "📢 Создать объявление",
+        "📢 Подать объявление",
         "📦 Мои объявления"
     )
 
-
     kb.add(
-        "📜 Правила",
-        "👤 Профиль"
-    )
-
-
-    bot.send_message(
-        message.chat.id,
-        "Добро пожаловать в сервис объявлений.\n\n"
-        + RULES,
-        reply_markup=kb
-    )
-
-
-
-# =====================
-# СОЗДАНИЕ ОБЪЯВЛЕНИЯ
-# =====================
-
-
-@bot.message_handler(
-    func=lambda m: m.text=="📢 Создать объявление"
-)
-def create_ad(message):
-
-    kb = types.ReplyKeyboardMarkup(
-        resize_keyboard=True
-    )
-
-
-    for category in CATEGORIES:
-
-        kb.add(category)
-
-
-    kb.add("❌ Отмена")
-
-
-    bot.send_message(
-        message.chat.id,
-        "Выберите категорию:",
-        reply_markup=kb
-    )
-
-
-    bot.register_next_step_handler(
-        message,
-        category_step
-    )
-
-
-
-def category_step(message):
-
-    if message.text=="❌ Отмена":
-
-        cancel(message)
-        return
-
-
-    user_cache[message.chat.id] = {
-
-        "category": message.text
-
-    }
-
-
-    bot.send_message(
-        message.chat.id,
-        "Введите название объявления:"
-    )
-
-
-    bot.register_next_step_handler(
-        message,
-        title_step
-    )
-
-
-
-def title_step(message):
-
-    user_cache[message.chat.id]["title"] = message.text
-
-
-    bot.send_message(
-        message.chat.id,
-        "Введите описание товара или услуги:"
-    )
-
-
-    bot.register_next_step_handler(
-        message,
-        description_step
-    )
-
-
-
-def description_step(message):
-
-    user_cache[message.chat.id]["description"] = message.text
-
-
-    bot.send_message(
-        message.chat.id,
-        "Введите цену:"
-    )
-
-
-    bot.register_next_step_handler(
-        message,
-        price_step
-    )
-
-
-
-def price_step(message):
-
-    user_cache[message.chat.id]["price"] = message.text
-
-
-    bot.send_message(
-        message.chat.id,
-        "Введите город:"
-    )
-
-
-    bot.register_next_step_handler(
-        message,
-        city_step
-    )
-
-
-
-def city_step(message):
-
-    user_cache[message.chat.id]["city"] = message.text
-
-
-    bot.send_message(
-        message.chat.id,
-        "Введите контакт для связи:"
-    )
-
-
-    bot.register_next_step_handler(
-        message,
-        contact_step
-    )
-
-
-
-def contact_step(message):
-
-    user_cache[message.chat.id]["contact"] = message.text
-
-
-    bot.send_message(
-        message.chat.id,
-        "Отправьте фото объявления или напишите: нет"
-    )
-
-
-    bot.register_next_step_handler(
-        message,
-        photo_step
-    )
-
-
-
-def photo_step(message):
-
-    data = user_cache[message.chat.id]
-
-
-    photo = None
-
-
-    if message.content_type == "photo":
-
-        photo = message.photo[-1].file_id
-
-
-    data["photo"] = photo
-
-
-
-    con = connect()
-    cur = con.cursor()
-
-
-    cur.execute("""
-    INSERT INTO ads
-    (
-    user_id,
-    category,
-    title,
-    description,
-    price,
-    city,
-    contact,
-    photo,
-    created
-    )
-    VALUES(?,?,?,?,?,?,?,?,?)
-    """,
-    (
-        message.chat.id,
-        data["category"],
-        data["title"],
-        data["description"],
-        data["price"],
-        data["city"],
-        data["contact"],
-        data["photo"],
-        str(datetime.datetime.now())
-    ))
-
-
-    ad_id = cur.lastrowid
-
-
-    con.commit()
-    con.close()
-
-
-
-    text = f"""
-🆕 Новое объявление #{ad_id}
-
-📂 Категория:
-{data['category']}
-
-📌 Название:
-{data['title']}
-
-📝 Описание:
-{data['description']}
-
-💰 Цена:
-{data['price']}
-
-📍 Город:
-{data['city']}
-
-📞 Контакт:
-{data['contact']}
-"""
-
-
-
-    keyboard = types.InlineKeyboardMarkup()
-
-
-    keyboard.add(
-        types.InlineKeyboardButton(
-            "✅ Одобрить",
-            callback_data=f"approve_{ad_id}"
-        )
-    )
-
-
-    keyboard.add(
-        types.InlineKeyboardButton(
-            "❌ Отклонить",
-            callback_data=f"decline_{ad_id}"
-        )
-    )
-
-
-
-    # отправляем владельцу
-
-    bot.send_message(
-        OWNER_ID,
-        text,
-        reply_markup=keyboard
-    )
-
-
-
-    # отправляем менеджерам
-
-    con = connect()
-    cur = con.cursor()
-
-
-    cur.execute("""
-    SELECT id
-    FROM users
-    WHERE role='admin'
-    """)
-
-
-    managers = cur.fetchall()
-
-    con.close()
-
-
-
-    for manager in managers:
-
-        try:
-
-            bot.send_message(
-                manager[0],
-                text,
-                reply_markup=keyboard
-            )
-
-        except:
-
-            pass
-
-
-
-    bot.send_message(
-        message.chat.id,
-        "✅ Объявление отправлено на модерацию"
-    )
-
-
-    user_cache.pop(
-        message.chat.id,
-        None
-    )
-
-
-
-# =====================
-# ОТМЕНА
-# =====================
-
-
-@bot.message_handler(
-    func=lambda m: m.text=="❌ Отмена"
-)
-def cancel(message):
-    user_cache.pop(
-        message.chat.id,
-        None
-    )
-
-    kb = types.ReplyKeyboardMarkup(
-        resize_keyboard=True
-    )
-
-    kb.add(
-        "📢 Создать объявление",
-        "📦 Мои объявления"
+        "🔍 Поиск",
+        "❤️ Избранное"
     )
 
     kb.add(
@@ -905,313 +69,560 @@ def cancel(message):
         "ℹ️ Помощь"
     )
 
+    return kb
+
+
+
+def owner_menu():
+
+    kb = types.ReplyKeyboardMarkup(
+        resize_keyboard=True
+    )
+
+    kb.add(
+        "👥 Менеджеры",
+        "📊 Статистика"
+    )
+
+    kb.add(
+        "🚨 Жалобы",
+        "📜 Логи"
+    )
+
+    kb.add(
+        "📢 Рассылка",
+        "💾 Бэкап"
+    )
+
+    kb.add(
+        "⬅️ Назад"
+    )
+
+    return kb
+
+
+
+# =========================
+# START
+# =========================
+
+@bot.message_handler(commands=["start"])
+def start(message):
+
+    database.add_user(
+        message.from_user.id,
+        message.from_user.username or "unknown"
+    )
+
+    text = """
+👋 Добро пожаловать в Ads-Bot v5
+
+📢 Здесь можно размещать и искать объявления.
+
+⚠️ Важно:
+Вы самостоятельно передаёте контактные данные.
+Владелец бота не отвечает за сделки между пользователями.
+
+Используя бот, вы соглашаетесь с правилами.
+"""
+
+    if is_owner(message.from_user.id):
+
+        bot.send_message(
+            message.chat.id,
+            text + "\n\n👑 Панель владельца доступна.",
+            reply_markup=owner_menu()
+        )
+
+    else:
+
+        bot.send_message(
+            message.chat.id,
+            text,
+            reply_markup=main_menu()
+        )
+
+
+# =========================
+# OWNER PANEL
+# =========================
+
+@bot.message_handler(func=lambda m: m.text == "⚙️ Владелец")
+def owner_panel(message):
+
+    if not is_owner(message.from_user.id):
+        return
+
     bot.send_message(
         message.chat.id,
-        "❌ Создание объявления отменено.\n\nВы вернулись в главное меню.",
+        "👑 Панель владельца",
+        reply_markup=owner_menu()
+    )# =========================
+# МЕНЕДЖЕРЫ
+# =========================
+
+@bot.message_handler(func=lambda m: m.text == "👥 Менеджеры")
+def managers_menu(message):
+
+    if not is_owner(message.from_user.id):
+        return
+
+    kb = types.ReplyKeyboardMarkup(
+        resize_keyboard=True
+    )
+
+    kb.add(
+        "➕ Добавить менеджера",
+        "➖ Удалить менеджера"
+    )
+
+    kb.add(
+        "📋 Список менеджеров"
+    )
+
+    kb.add(
+        "⬅️ Назад"
+    )
+
+    bot.send_message(
+        message.chat.id,
+        "👥 Управление менеджерами",
         reply_markup=kb
     )
 
 
-# =====================
-# ОДОБРЕНИЕ ОБЪЯВЛЕНИЯ
-# =====================
+@bot.message_handler(func=lambda m: m.text == "📋 Список менеджеров")
+def list_managers(message):
 
-
-@bot.callback_query_handler(
-    func=lambda c: c.data.startswith("approve_")
-)
-def approve_ad(call):
-
-    if not is_moderator(call.from_user.id):
-
-        bot.answer_callback_query(
-            call.id,
-            "❌ Нет прав"
-        )
-
+    if not is_owner(message.from_user.id):
         return
 
+    managers = database.get_managers()
 
+    if not managers:
+        bot.send_message(
+            message.chat.id,
+            "Менеджеров пока нет."
+        )
+        return
 
-    ad_id = int(
-        call.data.split("_")[1]
+    text = "👥 Менеджеры:\n\n"
+
+    for user_id, username in managers:
+        text += f"• @{username} | ID: {user_id}\n"
+
+    bot.send_message(
+        message.chat.id,
+        text
     )
 
 
-    con = connect()
-    cur = con.cursor()
+@bot.message_handler(func=lambda m: m.text == "➕ Добавить менеджера")
+def add_manager_start(message):
 
+    if not is_owner(message.from_user.id):
+        return
 
-    cur.execute(
-        "SELECT * FROM ads WHERE id=?",
-        (ad_id,)
+    user_cache[message.chat.id] = {
+        "action": "add_manager"
+    }
+
+    bot.send_message(
+        message.chat.id,
+        "Введите Telegram ID пользователя:"
     )
 
 
-    ad = cur.fetchone()
+@bot.message_handler(func=lambda m: m.text == "➖ Удалить менеджера")
+def remove_manager_start(message):
 
-
-
-    if not ad:
-
-        con.close()
-
-        bot.answer_callback_query(
-            call.id,
-            "Объявление не найдено"
-        )
-
+    if not is_owner(message.from_user.id):
         return
 
+    user_cache[message.chat.id] = {
+        "action": "remove_manager"
+    }
 
-
-    if ad[9] != "moderation":
-
-        con.close()
-
-        bot.answer_callback_query(
-            call.id,
-            "⚠️ Уже обработано"
-        )
-
-        return
-
-
-
-    moderator = get_name(
-        call.from_user
+    bot.send_message(
+        message.chat.id,
+        "Введите ID менеджера для удаления:"
     )
 
 
 
-    cur.execute("""
-    UPDATE ads
-    SET status='published',
-        moderator=?
-    WHERE id=?
-    """,
-    (
-        moderator,
-        ad_id
-    ))
-
-
-    con.commit()
-    con.close()
-
-
-
-    post = f"""
-{ad[2]}
-
-📂 {ad[3]}
-
-📝 {ad[4]}
-
-💰 Цена: {ad[5]}
-
-📍 Город: {ad[6]}
-
-📞 Контакт: {ad[7]}
-
-
-────────────
-✅ Одобрено модератором {moderator}
-"""
-
-
+@bot.message_handler(func=lambda m: user_cache.get(m.chat.id, {}).get("action") == "add_manager")
+def add_manager_finish(message):
 
     try:
+        user_id = int(message.text)
 
-        if ad[8]:
-
-            bot.send_photo(
-                CHANNEL_ID,
-                ad[8],
-                caption=post
-            )
-
-        else:
-
-            bot.send_message(
-                CHANNEL_ID,
-                post
-            )
-
-
-    except Exception as e:
-
-        bot.send_message(
-            call.message.chat.id,
-            "❌ Ошибка публикации в канал"
+        database.add_manager(
+            user_id,
+            str(user_id),
+            message.from_user.id
         )
 
-        return
-
-
-
-    write_log(
-        moderator,
-        f"Одобрил объявление #{ad_id}"
-    )
-
-
-
-    try:
-
         bot.send_message(
-            ad[1],
-            f"""
-✅ Ваше объявление опубликовано!
+            message.chat.id,
+            "✅ Менеджер добавлен.",
+            reply_markup=owner_menu()
+        )
 
-Номер:
-#{ad_id}
-"""
+        user_cache.pop(
+            message.chat.id,
+            None
         )
 
     except:
 
-        pass
+        bot.send_message(
+            message.chat.id,
+            "❌ Неверный ID"
+        )
 
 
 
-    bot.answer_callback_query(
-        call.id,
-        "✅ Опубликовано"
+@bot.message_handler(func=lambda m: user_cache.get(m.chat.id, {}).get("action") == "remove_manager")
+def remove_manager_finish(message):
+
+    try:
+
+        user_id = int(message.text)
+
+        database.remove_manager(
+            user_id
+        )
+
+        bot.send_message(
+            message.chat.id,
+            "✅ Менеджер удалён.",
+            reply_markup=owner_menu()
+        )
+
+        user_cache.pop(
+            message.chat.id,
+            None
+        )
+
+    except:
+
+        bot.send_message(
+            message.chat.id,
+            "❌ Ошибка ID"
+        )
+
+
+# =========================
+# СТАТИСТИКА
+# =========================
+
+@bot.message_handler(func=lambda m: m.text == "📊 Статистика")
+def stats(message):
+
+    if not is_owner(message.from_user.id):
+        return
+
+    data = database.get_stats()
+
+    text = f"""
+📊 Статистика Ads-Bot v5
+
+👤 Пользователи: {data['users']}
+📢 Объявления: {data['ads']}
+✅ Опубликовано: {data['published']}
+"""
+
+    bot.send_message(
+        message.chat.id,
+        text
+    )# =========================
+# СОЗДАНИЕ ОБЪЯВЛЕНИЯ
+# =========================
+
+@bot.message_handler(func=lambda m: m.text == "📢 Подать объявление")
+def create_ad_start(message):
+
+    if database.is_blacklisted(message.from_user.id):
+        bot.send_message(
+            message.chat.id,
+            "❌ Вы не можете создавать объявления."
+        )
+        return
+
+    user_cache[message.chat.id] = {
+        "step": "category",
+        "data": {
+            "user_id": message.from_user.id
+        }
+    }
+
+    bot.send_message(
+        message.chat.id,
+        "Выберите категорию:"
     )
 
 
+@bot.message_handler(func=lambda m: user_cache.get(m.chat.id, {}).get("step") == "category")
+def category(message):
 
-# =====================
-# ОТКЛОНЕНИЕ
-# =====================
+    user_cache[message.chat.id]["data"]["category"] = message.text
+    user_cache[message.chat.id]["step"] = "title"
+
+    bot.send_message(
+        message.chat.id,
+        "Введите название товара:"
+    )
 
 
-@bot.callback_query_handler(
-    func=lambda c: c.data.startswith("decline_")
-)
-def decline_ad(call):
+@bot.message_handler(func=lambda m: user_cache.get(m.chat.id, {}).get("step") == "title")
+def title(message):
+
+    user_cache[message.chat.id]["data"]["title"] = message.text
+    user_cache[message.chat.id]["step"] = "description"
+
+    bot.send_message(
+        message.chat.id,
+        "Введите описание:"
+    )
+
+
+@bot.message_handler(func=lambda m: user_cache.get(m.chat.id, {}).get("step") == "description")
+def description(message):
+
+    user_cache[message.chat.id]["data"]["description"] = message.text
+    user_cache[message.chat.id]["step"] = "price"
+
+    bot.send_message(
+        message.chat.id,
+        "Введите цену:"
+    )
+
+
+@bot.message_handler(func=lambda m: user_cache.get(m.chat.id, {}).get("step") == "price")
+def price(message):
+
+    user_cache[message.chat.id]["data"]["price"] = message.text
+    user_cache[message.chat.id]["step"] = "city"
+
+    bot.send_message(
+        message.chat.id,
+        "Введите город:"
+    )
+
+
+@bot.message_handler(func=lambda m: user_cache.get(m.chat.id, {}).get("step") == "city")
+def city(message):
+
+    user_cache[message.chat.id]["data"]["city"] = message.text
+    user_cache[message.chat.id]["step"] = "contact"
+
+    bot.send_message(
+        message.chat.id,
+        "Введите контакт:"
+    )
+
+
+@bot.message_handler(func=lambda m: user_cache.get(m.chat.id, {}).get("step") == "contact")
+def contact(message):
+
+    user_cache[message.chat.id]["data"]["contact"] = message.text
+    user_cache[message.chat.id]["step"] = "photo"
+
+    bot.send_message(
+        message.chat.id,
+        "Отправьте фото товара."
+    )
+
+
+@bot.message_handler(content_types=["photo"])
+def photo(message):
+
+    if message.chat.id not in user_cache:
+        return
+
+    if user_cache[message.chat.id].get("step") != "photo":
+        return
+
+    data = user_cache[message.chat.id]["data"]
+
+    data["photo"] = message.photo[-1].file_id
+
+    ad_id = database.add_ad(data)
+
+    bot.send_message(
+        message.chat.id,
+        f"✅ Объявление #{ad_id} отправлено на модерацию.",
+        reply_markup=main_menu()
+    )
+
+    # отправка модераторам
+    for manager_id, username in database.get_managers():
+
+        bot.send_message(
+            manager_id,
+            f"""
+🆕 Новое объявление #{ad_id}
+
+📌 {data['title']}
+💰 {data['price']}
+📍 {data['city']}
+""",
+        )
+
+    user_cache.pop(
+        message.chat.id,
+        None
+    )
+
+
+# =========================
+# МОДЕРАЦИЯ
+# =========================
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("approve_"))
+def approve_ad(call):
 
     if not is_moderator(call.from_user.id):
-
         bot.answer_callback_query(
             call.id,
             "❌ Нет прав"
         )
-
         return
-
-
 
     ad_id = int(
         call.data.split("_")[1]
     )
 
+    username = call.from_user.username or str(call.from_user.id)
 
-    user_cache[call.from_user.id] = {
-        "decline_id": ad_id
-    }
-
-
-
-    bot.send_message(
-        call.from_user.id,
-        "Введите причину отклонения:"
+    result = database.approve(
+        ad_id,
+        username
     )
 
+    if result:
 
-    bot.register_next_step_handler(
-        call.message,
-        save_decline
-    )
+        database.log(
+            username,
+            "approve",
+            ad_id
+        )
+
+        bot.answer_callback_query(
+            call.id,
+            "Одобрено"
+        )
+
+        bot.edit_message_text(
+            "✅ Одобрено модератором @" + username,
+            call.message.chat.id,
+            call.message.message_id
+        )
+
+    else:
+
+        bot.answer_callback_query(
+            call.id,
+            "Уже обработано"
+        )
 
 
+@bot.callback_query_handler(func=lambda c: c.data.startswith("reject_"))
+def reject_ad(call):
 
-def save_decline(message):
-
-    data = user_cache.get(
-        message.chat.id
-    )
-
-
-    if not data:
-
+    if not is_moderator(call.from_user.id):
         return
 
-
-
-    ad_id = data["decline_id"]
-
-
-
-    con = connect()
-    cur = con.cursor()
-
-
-
-    cur.execute(
-        "SELECT user_id FROM ads WHERE id=?",
-        (ad_id,)
+    ad_id = int(
+        call.data.split("_")[1]
     )
 
+    username = call.from_user.username or str(call.from_user.id)
 
-    owner = cur.fetchone()
+    database.reject(
+        ad_id,
+        username
+    )
 
-
-
-    cur.execute("""
-    UPDATE ads
-    SET status='rejected',
-        reason=?,
-        moderator=?
-    WHERE id=?
-    """,
-    (
-        message.text,
-        get_name(message.from_user),
+    database.log(
+        username,
+        "reject",
         ad_id
-    ))
-
-
-
-    con.commit()
-    con.close()
-
-
-
-    write_log(
-        get_name(message.from_user),
-        f"Отклонил объявление #{ad_id}"
     )
 
+    bot.answer_callback_query(
+        call.id,
+        "Отклонено"
+    )# =========================
+# ПОИСК
+# =========================
 
+@bot.message_handler(func=lambda m: m.text == "🔍 Поиск")
+def search_start(message):
 
-    if owner:
-
-        try:
-
-            bot.send_message(
-                owner[0],
-                f"""
-❌ Ваше объявление #{ad_id} отклонено.
-
-Причина:
-{message.text}
-"""
-            )
-
-        except:
-
-            pass
-
-
+    user_cache[message.chat.id] = {
+        "action": "search"
+    }
 
     bot.send_message(
         message.chat.id,
-        "❌ Объявление отклонено"
+        "Введите название, город или категорию:"
     )
 
 
+@bot.message_handler(
+    func=lambda m: user_cache.get(m.chat.id, {}).get("action") == "search"
+)
+def search(message):
+
+    query = message.text.lower()
+
+    con = database.connect()
+    cur = con.cursor()
+
+    cur.execute("""
+    SELECT id,title,price,city
+    FROM ads
+    WHERE status='published'
+    AND (
+        lower(title) LIKE ?
+        OR lower(city) LIKE ?
+        OR lower(category) LIKE ?
+    )
+    """,
+    (
+        f"%{query}%",
+        f"%{query}%",
+        f"%{query}%"
+    ))
+
+    ads = cur.fetchall()
+
+    con.close()
+
+    if not ads:
+
+        bot.send_message(
+            message.chat.id,
+            "Ничего не найдено.",
+            reply_markup=main_menu()
+        )
+
+    else:
+
+        text = "🔍 Найдено:\n\n"
+
+        for ad in ads:
+            text += (
+                f"#{ad[0]} {ad[1]}\n"
+                f"💰 {ad[2]}\n"
+                f"📍 {ad[3]}\n\n"
+            )
+
+        bot.send_message(
+            message.chat.id,
+            text
+        )
 
     user_cache.pop(
         message.chat.id,
@@ -1220,406 +631,85 @@ def save_decline(message):
 
 
 
-# =====================
-# МОИ ОБЪЯВЛЕНИЯ
-# =====================
+# =========================
+# ИЗБРАННОЕ
+# =========================
 
+@bot.message_handler(func=lambda m: m.text == "❤️ Избранное")
+def favorites(message):
 
-@bot.message_handler(
-    func=lambda m: m.text=="📦 Мои объявления"
-)
-def my_ads(message):
-
-    con = connect()
-    cur = con.cursor()
-
-
-    cur.execute("""
-    SELECT id,title,status
-    FROM ads
-    WHERE user_id=?
-    """,
-    (
-        message.chat.id,
-    ))
-
-
-    ads = cur.fetchall()
-
-    con.close()
-
-
+    ads = database.get_favorites(
+        message.from_user.id
+    )
 
     if not ads:
 
         bot.send_message(
             message.chat.id,
-            "У вас нет объявлений"
+            "❤️ Избранных объявлений нет."
         )
 
         return
 
 
-
-    text = "📦 Ваши объявления:\n\n"
-
-
+    text = "❤️ Избранное:\n\n"
 
     for ad in ads:
-
-        status = {
-            "moderation":"🟡 Проверка",
-            "published":"🟢 Опубликовано",
-            "rejected":"🔴 Отклонено"
-        }.get(
-            ad[2],
-            ad[2]
-        )
-
-
-        text += (
-            f"#{ad[0]} {ad[1]}\n"
-            f"{status}\n\n"
-        )
-
-
+        text += f"Объявление #{ad[0]}\n"
 
     bot.send_message(
         message.chat.id,
         text
-    )# =====================
-# СТАТИСТИКА
-# =====================
-
-
-@bot.callback_query_handler(
-    func=lambda c: c.data=="stats"
-)
-def statistics(call):
-
-    if call.from_user.id != OWNER_ID:
-        return
-
-
-    con = connect()
-    cur = con.cursor()
-
-
-    cur.execute(
-        "SELECT COUNT(*) FROM users"
-    )
-    users = cur.fetchone()[0]
-
-
-    cur.execute(
-        "SELECT COUNT(*) FROM ads"
-    )
-    ads = cur.fetchone()[0]
-
-
-    cur.execute("""
-    SELECT COUNT(*)
-    FROM ads
-    WHERE status='published'
-    """)
-    published = cur.fetchone()[0]
-
-
-    cur.execute("""
-    SELECT COUNT(*)
-    FROM ads
-    WHERE status='rejected'
-    """)
-    rejected = cur.fetchone()[0]
-
-
-    cur.execute("""
-    SELECT COUNT(*)
-    FROM users
-    WHERE role='admin'
-    """)
-    admins = cur.fetchone()[0]
-
-
-    con.close()
-
-
-    bot.send_message(
-        call.message.chat.id,
-        f"""
-📊 Статистика
-
-👥 Пользователей:
-{users}
-
-📦 Объявлений:
-{ads}
-
-🟢 Опубликовано:
-{published}
-
-🔴 Отклонено:
-{rejected}
-
-🛡 Менеджеров:
-{admins}
-"""
     )
 
 
 
-# =====================
-# ЛОГИ
-# =====================
-
-
-@bot.callback_query_handler(
-    func=lambda c: c.data=="logs"
-)
-def logs(call):
-
-    if call.from_user.id != OWNER_ID:
-        return
-
-
-    con = connect()
-    cur = con.cursor()
-
-
-    cur.execute("""
-    SELECT user,action,created
-    FROM logs
-    ORDER BY id DESC
-    LIMIT 15
-    """)
-
-
-    result = cur.fetchall()
-
-    con.close()
-
-
-
-    text = "📜 Последние действия:\n\n"
-
-
-    if not result:
-
-        text += "Логов нет"
-
-    else:
-
-        for row in result:
-
-            text += (
-                f"👤 {row[0]}\n"
-                f"⚙️ {row[1]}\n"
-                f"🕒 {row[2]}\n\n"
-            )
-
-
-
-    bot.send_message(
-        call.message.chat.id,
-        text
-    )
-
-
-
-# =====================
-# НАСТРОЙКИ
-# =====================
-
-
-@bot.callback_query_handler(
-    func=lambda c: c.data=="settings"
-)
-def settings(call):
-
-    if call.from_user.id != OWNER_ID:
-        return
-
-
-    bot.send_message(
-        call.message.chat.id,
-        """
-⚙️ Настройки
-
-Доступно:
-
-👥 Управление менеджерами
-📊 Статистика
-📜 Логи
-
-Дополнительные настройки
-можно расширять дальше.
-"""
-    )
-
-
-
-# =====================
-# ПРАВИЛА
-# =====================
-
-
-@bot.message_handler(
-    func=lambda m: m.text=="📜 Правила"
-)
-def rules(message):
-
-    bot.send_message(
-        message.chat.id,
-        RULES
-    )
-
-
-
-# =====================
+# =========================
 # ПРОФИЛЬ
-# =====================
+# =========================
 
-
-@bot.message_handler(
-    func=lambda m: m.text=="👤 Профиль"
-)
+@bot.message_handler(func=lambda m: m.text == "👤 Профиль")
 def profile(message):
 
-    role = get_role(
-        message.chat.id
-    )
-
+    stats = database.get_stats()
 
     bot.send_message(
         message.chat.id,
         f"""
-👤 Профиль
+👤 Ваш профиль
 
-ID:
-{message.chat.id}
+🆔 ID:
+{message.from_user.id}
 
-Роль:
-{role}
+⭐ Рейтинг:
+новый пользователь
+
+📢 Всего объявлений в системе:
+{stats['ads']}
 """
     )
 
 
 
-# =====================
-# ЖАЛОБЫ
-# =====================
+# =========================
+# НАЗАД
+# =========================
 
-
-@bot.message_handler(commands=["report"])
-def report(message):
-
-    bot.send_message(
-        message.chat.id,
-        """
-🚨 Отправьте:
-
-номер объявления
-+
-причину жалобы
-"""
-    )
-
-
-    bot.register_next_step_handler(
-        message,
-        save_report
-    )
-
-
-
-def save_report(message):
-
-    text = message.text
-
-
-    con = connect()
-    cur = con.cursor()
-
-
-    cur.execute("""
-    INSERT INTO reports
-    (user_id,reason,created)
-    VALUES(?,?,?)
-    """,
-    (
-        message.chat.id,
-        text,
-        str(datetime.datetime.now())
-    ))
-
-
-    con.commit()
-    con.close()
-
-
-
-    write_log(
-        get_name(message.from_user),
-        "Отправил жалобу"
-    )
-
+@bot.message_handler(func=lambda m: m.text == "⬅️ Назад")
+def back(message):
 
     bot.send_message(
         message.chat.id,
-        "✅ Жалоба отправлена"
+        "Главное меню",
+        reply_markup=main_menu()
     )
 
 
 
-# =====================
-# ПОМОЩЬ
-# =====================
-
-
-@bot.message_handler(commands=["help"])
-def help_command(message):
-
-    bot.send_message(
-        message.chat.id,
-        """
-🆘 Помощь
-
-📢 Создать объявление
-📦 Мои объявления
-📜 Правила
-
-Жалоба:
- /report
-
-Админ:
- /admin
-"""
-    )
-
-
-
-# =====================
+# =========================
 # ЗАПУСК
-# =====================
+# =========================
 
+print("Ads-Bot v5 запущен")
 
-print("Ads-Bot v4 запущен")
-
-
-while True:
-
-    try:
-
-        bot.infinity_polling(
-            timeout=60,
-            long_polling_timeout=60
-        )
-
-    except Exception as e:
-
-        print(
-            "Ошибка:",
-            e
-        )
-
-        time.sleep(5)
+bot.infinity_polling()
