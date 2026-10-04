@@ -1,4 +1,5 @@
-TOKEN = "8953313998:AAG2PirihextklZQeX7o5MC3V0_TZWNn6Wc"
+import os
 
-OWNER_ID = 5213791057
-CHANNEL_ID = -1003830895786
+TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+CHANNEL_ID = os.getenv("CHANNEL_ID", "")
